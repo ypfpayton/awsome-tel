@@ -104,3 +104,51 @@ B树相对于平衡二叉树的不同是，每个节点包含的关键字增多�
 5. 索引列进行了非等值查询，也就是范围查询(不满足最左匹配)。
 6. 字符串与数字进行了比较
 7. OR 条件连接时某些列没有加索引
+
+- binlog格式
+  - statement：记录sql原语原文
+  - row：记录执行的逻辑过程
+  - mixed：statement+row 混合
+
+#### 为什么statement会导致主备不一致？
+
+因为statement只记录了sql，并未考虑事物顺序问题，下图翻译为
+
+| session 1                      | session 2                    |
+| ------------------------------ | ---------------------------- |
+| begin;                         | begin;                       |
+| delete from test where b <= 6; | /                            |
+| /                              | insert into test values (3); |
+| /                              | commit;                      |
+| commit;                        |                              |
+
+ statement会翻译为如下，导致数据丢失
+
+insert into test values(3); -- session2先提交
+delete from test where b <= 6; -- session1后提交
+
+#### RR是如何解决上述问题？
+
+引入了间隙锁（Gap lock），不仅锁住了行，而且锁住了行与行之间的间隙，避免出现幻读。比如上述例子，在session 1执行delete语句的时候，(0,6]区间就被上了行锁与间隙锁，这样session 2在执行insert的时候，被session 1的间隙锁阻塞，就不会出现sql执行顺序不一致的问题
+
+#### RR弊端？怎么利用RC
+
+InnoDB的RR级别之所以能防止幻读和binlog sql执行问题，是因为锁多了。而锁多了，自然就会**影响并发量**。并且，引发**死锁**的概率要比RC高得多。
+
+假设表t中有两个字段(id, b)。表中有两行数据(5,5), (10,10)，运行在RR级别。
+
+| session 1                                       | session 2                                |
+| ----------------------------------------------- | ---------------------------------------- |
+| begin;                                          | /                                        |
+| select * from t where id=9 for update;          | /                                        |
+| /                                               | begin;                                   |
+| /                                               | select * from t where id=9 for update;   |
+| /                                               | insert into t values (9,9) **[blocked]** |
+| insert into t values (9,9) **[Deadlock found]** | /                                        |
+
+1. session 1 执行select … for update, 加上间隙锁(5,10)。
+2. session 2 执行select … for update, 加上间隙锁(5,10)。间隙锁之间不会冲突，可以执行。
+3. session 2 执行insert, 在session 1的间隙锁区间，被阻塞。
+4. session 1 执行insert, 在session 2的间隙锁区间，被阻塞，MySQL检测出死锁，报错。
+
+> 如果是RC级别，执行结果应当是，session 2插入成功，session 1 insert被阻塞（当前读被写锁阻塞），此时如果session 2提交，则提交成功，session 1提交失败，提示主键冲突。
