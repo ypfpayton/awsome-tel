@@ -1,9 +1,3 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2021-$today.year. All rights reserved.
- */
-
-package com.payton.test;
-
 import java.util.ArrayDeque;
 import java.util.Queue;
 
