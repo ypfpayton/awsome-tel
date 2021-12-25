@@ -47,6 +47,7 @@
 ### ThreadLocal
 
 > ThreadLocal类似于每个线程存放数据的盒子
+[理解Java中的ThreadLocal](https://droidyue.com/blog/2016/03/13/learning-threadlocal-in-java/)
 
 
 
