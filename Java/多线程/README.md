@@ -461,4 +461,305 @@ take操作和put操作的流程是类似的，总结一下take操作的流程：
 3. 在第2点被阻塞的线程会被唤醒，但是在唤醒之后，**依然需要拿到锁**才能继续往下执行，否则，自旋拿锁，拿到锁了再while判断队列是否可用（这也是为什么不用if判断，而使用while判断的原因）。
 
 
+### 锁
 
+#### 锁的分类
+
+##### 可重入锁和非可重入锁
+
+> 所谓重入锁，顾名思义。就是支持重新进入的锁，也就是说这个锁支持一个**线程对资源重复加锁**。
+>
+> synchronized关键字就是使用的重入锁。比如说，你在一个synchronized实例方法里面调用另一个本实例的synchronized实例方法，它可以重新进入这个锁，不会出现任何异常。
+>
+> 如果我们自己在继承AQS实现同步器的时候，没有考虑到占有锁的线程再次获取锁的场景，可能就会导致线程阻塞，那这个就是一个“非可重入锁”。
+
+##### 公平锁与非公平锁
+
+> 这里的“公平”，其实通俗意义来说就是“先来后到”，也就是FIFO。如果对一个锁来说，先对锁获取请求的线程一定会先被满足，后对锁获取请求的线程后被满足，那这个锁就是公平的。反之，那就是不公平的。
+>
+> 一般情况下，**非公平锁能提升一定的效率。但是非公平锁可能会发生线程饥饿（有一些线程长时间得不到锁）的情况**。所以要根据实际的需求来选择非公平锁和公平锁。
+>
+> ReentrantLock支持非公平锁和公平锁两种。
+
+##### 读写锁和排它锁
+
+> synchronized用的锁和ReentrantLock，其实都是“排它锁”。也就是说，这些锁在同一时刻只允许一个线程进行访问。
+>
+> 而读写锁可以再同一时刻允许多个读线程访问。Java提供了ReentrantReadWriteLock类作为读写锁的默认实现，内部维护了两个锁：一个读锁，一个写锁。通过分离读锁和写锁，使得在“读多写少”的环境下，大大地提高了性能。
+>
+> 注意，即使用读写锁，在写线程访问时，所有的读线程和其它写线程均被阻塞
+
+
+
+#### 锁的接口和类
+
+##### 抽象类AQS/AQLS/AOS
+
+AQS里面的“资源”是用一个`int`类型的数据来表示的，有时候我们的业务需求资源的数量超出了`int`的范围，所以在JDK 1.6 中，多了一个**AQLS**（AbstractQueuedLongSynchronizer）。它的代码跟AQS几乎一样，只是把资源的类型变成了`long`类型。
+
+AQS和AQLS都继承了一个类叫**AOS**（AbstractOwnableSynchronizer）。这个类也是在JDK 1.6 中出现的。这个类只有几行简单的代码。从源码类上的注释可以知道，它是用于表示锁与持有者之间的关系（独占模式）。可以看一下它的主要方法：
+
+```java
+// 独占模式，锁的持有者  
+private transient Thread exclusiveOwnerThread;  
+
+// 设置锁持有者  
+protected final void setExclusiveOwnerThread(Thread t) {  
+    exclusiveOwnerThread = t;  
+}  
+
+// 获取锁的持有线程  
+protected final Thread getExclusiveOwnerThread() {  
+    return exclusiveOwnerThread;  
+}
+```
+
+
+
+##### 接口Condition/Lock/ReadWriteLock
+
+###### ReentrantLock
+
+ReentrantLock是一个非抽象类，它是Lock接口的JDK默认实现，实现了锁的基本功能。从名字上看，它是一个”可重入“锁，从源码上看，它内部有一个抽象类`Sync`，是继承了AQS，自己实现的一个同步器。同时，ReentrantLock内部有两个非抽象类`NonfairSync`和`FairSync`，它们都继承了Sync。从名字上看得出，分别是”非公平同步器“和”公平同步器“的意思。这意味着ReentrantLock可以支持”公平锁“和”非公平锁“。
+
+通过看着两个同步器的源码可以发现，它们的实现都是”独占“的。都调用了AOS的`setExclusiveOwnerThread`方法，所以ReentrantLock的锁的”独占“的，也就是说，它的锁都是”排他锁“，不能共享。
+
+在ReentrantLock的构造方法里，可以传入一个`boolean`类型的参数，来指定它是否是一个公平锁，默认情况下是非公平的。这个参数一旦实例化后就不能修改，只能通过`isFair()`方法来查看。
+
+###### ReentrantReadWriteLock
+
+这个类也是一个非抽象类，它是ReadWriteLock接口的JDK默认实现。它与ReentrantLock的功能类似，同样是可重入的，支持非公平锁和公平锁。不同的是，它还支持”读写锁“。ReentrantReadWriteLock实现了读写锁，但它有一个小弊端，就是在“写”操作的时候，其它线程不能写也不能读。我们称这种现象为“写饥饿”
+
+ReentrantReadWriteLock内部的结构大概是这样：
+
+```java
+// 内部结构
+private final ReentrantReadWriteLock.ReadLock readerLock;
+private final ReentrantReadWriteLock.WriteLock writerLock;
+final Sync sync;
+abstract static class Sync extends AbstractQueuedSynchronizer {
+    // 具体实现
+}
+static final class NonfairSync extends Sync {
+    // 具体实现
+}
+static final class FairSync extends Sync {
+    // 具体实现
+}
+public static class ReadLock implements Lock, java.io.Serializable {
+    private final Sync sync;
+    protected ReadLock(ReentrantReadWriteLock lock) {
+            sync = lock.sync;
+    }
+    // 具体实现
+}
+public static class WriteLock implements Lock, java.io.Serializable {
+    private final Sync sync;
+    protected WriteLock(ReentrantReadWriteLock lock) {
+            sync = lock.sync;
+    }
+    // 具体实现
+}
+
+// 构造方法，初始化两个锁
+public ReentrantReadWriteLock(boolean fair) {
+    sync = fair ? new FairSync() : new NonfairSync();
+    readerLock = new ReadLock(this);
+    writerLock = new WriteLock(this);
+}
+
+// 获取读锁和写锁的方法
+public ReentrantReadWriteLock.WriteLock writeLock() { return writerLock; }
+public ReentrantReadWriteLock.ReadLock  readLock()  { return readerLock; }
+```
+
+
+
+###### StampedLock
+
+> `StampedLock`类是在Java 8 才发布的，也是Doug Lea大神所写，有人号称它为锁的性能之王。它没有实现Lock接口和ReadWriteLock接口，但它其实是实现了“读写锁”的功能，并且性能比ReentrantReadWriteLock更高。StampedLock还把读锁分为了“乐观读锁”和“悲观读锁”两种。ReentrantReadWriteLock会发生“写饥饿”的现象，但StampedLock不会
+
+```java
+class Point {
+   private double x, y;
+   private final StampedLock sl = new StampedLock();
+
+   // 写锁的使用
+   void move(double deltaX, double deltaY) {
+     long stamp = sl.writeLock(); // 获取写锁
+     try {
+       x += deltaX;
+       y += deltaY;
+     } finally {
+       sl.unlockWrite(stamp); // 释放写锁
+     }
+   }
+
+   // 乐观读锁的使用
+   double distanceFromOrigin() {
+     long stamp = sl.tryOptimisticRead(); // 获取乐观读锁
+     double currentX = x, currentY = y;
+     if (!sl.validate(stamp)) { // //检查乐观读锁后是否有其他写锁发生，有则返回false
+        stamp = sl.readLock(); // 获取一个悲观读锁
+        try {
+          currentX = x;
+          currentY = y;
+        } finally {
+           sl.unlockRead(stamp); // 释放悲观读锁
+        }
+     }
+     return Math.sqrt(currentX * currentX + currentY * currentY);
+   }
+
+   // 悲观读锁以及读锁升级写锁的使用
+   void moveIfAtOrigin(double newX, double newY) {
+     long stamp = sl.readLock(); // 悲观读锁
+     try {
+       while (x == 0.0 && y == 0.0) {
+         // 读锁尝试转换为写锁：转换成功后相当于获取了写锁，转换失败相当于有写锁被占用
+         long ws = sl.tryConvertToWriteLock(stamp); 
+
+         if (ws != 0L) { // 如果转换成功
+           stamp = ws; // 读锁的票据更新为写锁的
+           x = newX;
+           y = newY;
+           break;
+         }
+         else { // 如果转换失败
+           sl.unlockRead(stamp); // 释放读锁
+           stamp = sl.writeLock(); // 强制获取写锁
+         }
+       }
+     } finally {
+       sl.unlock(stamp); // 释放所有锁
+     }
+   }
+}}
+```
+
+```java
+// 获取读锁（阻塞，不响应中断）
+long readLock();
+// 获取读锁（立即）
+long tryReadLock();
+// 限时获取读锁（响应中断）
+long tryReadLock(long time, TimeUnit unit);
+// 获取读锁（阻塞，响应中断）
+long readLockInterruptibly();
+```
+
+
+
+
+
+### 并发容器
+
+![img](https://redspider.gitbook.io/~/files/v0/b/gitbook-28427.appspot.com/o/assets%2F-L_5HvtIhTFW9TQlOF8e%2F-L_5TIKcBFHWPtY3OwUo%2F-L_5TIqiTZQ7Me5TObhp%2F%E5%B9%B6%E5%8F%91%E5%AE%B9%E5%99%A8.png?generation=1551665549655423&alt=media)
+
+
+
+#### ConcurrentMap
+
+```java
+public interface ConcurrentMap<K, V> extends Map<K, V> {
+    //插入元素
+    V putIfAbsent(K key, V value);
+    //移除元素
+    boolean remove(Object key, Object value);
+    //替换元素
+    boolean replace(K key, V oldValue, V newValue);
+    //替换元素
+    V replace(K key, V value);
+}
+```
+
+**putIfAbsent：**与原有put方法不同的是，putIfAbsent方法中如果插入的key相同，则不替换原有的value值；
+
+**remove：**与原有remove方法不同的是，新remove方法中增加了对value的判断，如果要删除的key-value不能与Map中原有的key-value对应上，则不会删除该元素;
+
+**replace(K,V,V)：**增加了对value值的判断，如果key-oldValue能与Map中原有的key-value对应上，才进行替换操作；
+
+**replace(K,V)：**与上面的replace不同的是，此replace不会对Map中原有的key-value进行比较，如果key存在则直接替换；
+
+
+
+#### ConcurrentNavigableMap
+
+ConcurrentNavigableMap接口继承了NavigableMap接口，这个接口提供了针对给定搜索目标返回最接近匹配项的导航方法。
+
+ConcurrentNavigableMap接口的主要实现类是ConcurrentSkipListMap类。从名字上来看，它的底层使用的是跳表（SkipList）的数据结构。关于跳表的数据结构这里不做太多介绍，它是一种”空间换时间“的数据结构，可以使用CAS来保证并发安全性。
+
+
+
+#### 并发Queue
+
+JDK并没有提供线程安全的List类，因为对List来说，**很难去开发一个通用并且没有并发瓶颈的线程安全的List**。因为即使简单的读操作，拿contains() 这样一个操作来说，很难搜索的时候如何避免锁住整个list。
+
+所以退一步，JDK提供了对队列和双端队列的线程安全的类：ConcurrentLinkedDeque和ConcurrentLinkedQueue。因为队列相对于List来说，有更多的限制。这两个类是使用CAS来实现线程安全的。
+
+
+
+#### 并发Set
+
+JDK提供了ConcurrentSkipListSet，是线程安全的有序的集合。底层是使用ConcurrentSkipListMap实现。
+
+谷歌的guava框架实现了一个线程安全的ConcurrentHashSet：
+
+```java
+Set<String> s = Sets.newConcurrentHashSet();
+```
+
+
+
+### CopyOnWrite
+
+> CopyOnWrite容器即**写时复制的容器**,当我们往一个容器中添加元素的时候，不直接往容器中添加，而是将当前容器进行copy，复制出来一个新的容器，然后向新容器中添加我们需要的元素，最后将原容器的引用指向新容器。这样做的好处在于，我们可以在并发的场景下对容器进行"读操作"而不需要"加锁"，从而达到读写分离的目的。
+
+**优点**： CopyOnWriteArrayList经常被用于“读多写少”的并发场景，是因为CopyOnWriteArrayList无需任何同步措施，大大增强了读的性能。在Java中遍历线程非安全的List(如：ArrayList和 LinkedList)的时候，若中途有别的线程对List容器进行修改，那么会抛出ConcurrentModificationException异常。CopyOnWriteArrayList由于其"读写分离"，遍历和修改操作分别作用在不同的List容器，所以在使用迭代器遍历的时候，则不会抛出异常。
+
+**缺点**： 
+
+第一个缺点是CopyOnWriteArrayList每次执行写操作都会将原容器进行拷贝了一份，数据量大的时候，内存会存在较大的压力，可能会引起频繁Full GC（ZGC因为没有使用Full GC）。比如这些对象占用的内存比较大200M左右，那么再写入100M数据进去，内存就会多占用300M。
+
+第二个缺点是CopyOnWriteArrayList由于实现的原因，写和读分别作用在不同新老容器上，在写操作执行过程中，读不会阻塞，但读取到的却是老容器的数据。
+
+
+
+通过CopyOnWriteArrayList实现一个CopyOnWriteMap
+
+```java
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
+
+public class CopyOnWriteMap<K, V> implements Map<K, V>, Cloneable {
+    private volatile Map<K, V> internalMap;
+
+    public CopyOnWriteMap() {
+        internalMap = new HashMap<K, V>();
+    }
+
+    public V put(K key, V value) {
+        synchronized (this) {
+            Map<K, V> newMap = new HashMap<K, V>(internalMap);
+            V val = newMap.put(key, value);
+            internalMap = newMap;
+            return val;
+        }
+    }
+
+    public V get(Object key) {
+        return internalMap.get(key);
+    }
+
+    public void putAll(Map<? extends K, ? extends V> newData) {
+        synchronized (this) {
+            Map<K, V> newMap = new HashMap<K, V>(internalMap);
+            newMap.putAll(newData);
+            internalMap = newMap;
+        }
+    }
+}
+```
+
+**应用场景**：假如我们有一个搜索的网站需要屏蔽一些“关键字”，“黑名单”每晚定时更新，每当用户搜索的时候，“黑名单”中的关键字不会出现在搜索结果当中，并且提示用户敏感字。
