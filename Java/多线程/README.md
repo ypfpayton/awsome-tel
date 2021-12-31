@@ -763,3 +763,281 @@ public class CopyOnWriteMap<K, V> implements Map<K, V>, Cloneable {
 ```
 
 **应用场景**：假如我们有一个搜索的网站需要屏蔽一些“关键字”，“黑名单”每晚定时更新，每当用户搜索的时候，“黑名单”中的关键字不会出现在搜索结果当中，并且提示用户敏感字。
+
+
+### 通信工具类
+
+| 类             | 作用                                       |
+| -------------- | ------------------------------------------ |
+| Semaphore      | 限制线程的数量                             |
+| Exchanger      | 两个线程交换数据                           |
+| CountDownLatch | 线程等待直到计数器减为0时开始工作          |
+| CyclicBarrier  | 作用跟CountDownLatch类似，但是可以重复使用 |
+| Phaser         | 增强的CyclicBarrier                        |
+
+
+
+#### Semaphore
+
+> Semaphore翻译过来是信号的意思。顾名思义，这个工具类提供的功能就是多个线程彼此“打信号”。而这个“信号”是一个`int`类型的数据，也可以看成是一种“资源”。
+
+```java
+// 默认情况下使用非公平
+public Semaphore(int permits) {
+    sync = new NonfairSync(permits);
+}
+
+public Semaphore(int permits, boolean fair) {
+    sync = fair ? new FairSync(permits) : new NonfairSync(permits);
+}
+```
+
+Semaphore翻译过来是信号的意思。顾名思义，这个工具类提供的功能就是多个线程彼此“打信号”。而这个“信号”是一个`int`类型的数据，也可以看成是一种“资源”。
+
+可以在构造函数中传入初始资源总数，以及是否使用“公平”的同步器。默认情况下，是非公平的。
+
+
+
+#### Exchanger
+
+Exchanger类用于两个线程交换数据。它支持泛型，也就是说你可以在两个线程之间传送任何数据。先来一个案例看看如何使用，比如两个线程之间想要传送字符串：
+
+```java
+public class ExchangerDemo {
+    public static void main(String[] args) throws InterruptedException {
+        Exchanger<String> exchanger = new Exchanger<>();
+
+        new Thread(() -> {
+            try {
+                System.out.println("这是线程A，得到了另一个线程的数据："
+                        + exchanger.exchange("这是来自线程A的数据"));
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
+
+        System.out.println("这个时候线程A是阻塞的，在等待线程B的数据");
+        Thread.sleep(1000);
+
+        new Thread(() -> {
+            try {
+                System.out.println("这是线程B，得到了另一个线程的数据："
+                        + exchanger.exchange("这是来自线程B的数据"));
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+}
+```
+
+输出：
+
+> 这个时候线程A是阻塞的，在等待线程B的数据 这是线程B，得到了另一个线程的数据：这是来自线程A的数据 这是线程A，得到了另一个线程的数据：这是来自线程B的数据
+
+那么问题来了，Exchanger只能是两个线程交换数据吗？那三个调用同一个实例的exchange方法会发生什么呢？答案是只有前两个线程会交换数据，第三个线程会进入阻塞状态。需要注意的是，exchange是可以重复使用的。也就是说，两个线程可以使用Exchanger在内存中不断地再交换数据。
+
+
+
+#### CountDownLatch
+
+假设某个线程在执行任务之前，需要等待其它线程完成一些前置任务，必须等所有的前置任务都完成，才能开始执行本线程的任务。
+
+需要注意的是构造器中的**计数值（count）实际上就是闭锁需要等待的线程数量**。这个值只能被设置一次，而且CountDownLatch**没有提供任何机制去重新设置这个计数值**。
+
+```java
+public class CountDownLatchDemo {
+    // 定义前置任务线程
+    static class PreTaskThread implements Runnable {
+
+        private String task;
+        private CountDownLatch countDownLatch;
+
+        public PreTaskThread(String task, CountDownLatch countDownLatch) {
+            this.task = task;
+            this.countDownLatch = countDownLatch;
+        }
+
+        @Override
+        public void run() {
+            try {
+                Random random = new Random();
+                Thread.sleep(random.nextInt(1000));
+                System.out.println(task + " - 任务完成");
+                countDownLatch.countDown();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        // 假设有三个模块需要加载
+        CountDownLatch countDownLatch = new CountDownLatch(3);
+
+        // 主任务
+        new Thread(() -> {
+            try {
+                System.out.println("等待数据加载...");
+                System.out.println(String.format("还有%d个前置任务", countDownLatch.getCount()));
+                countDownLatch.await();
+                System.out.println("数据加载完成，正式开始游戏！");
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
+
+        // 前置任务
+        new Thread(new PreTaskThread("加载地图数据", countDownLatch)).start();
+        new Thread(new PreTaskThread("加载人物模型", countDownLatch)).start();
+        new Thread(new PreTaskThread("加载背景音乐", countDownLatch)).start();
+    }
+}
+```
+
+输出：
+
+> 等待数据加载... 还有3个前置任务 加载人物模型 - 任务完成 加载背景音乐 - 任务完成 加载地图数据 - 任务完成 数据加载完成，正式开始游戏！
+
+
+
+
+
+#### CyclicBarrier
+
+CyclicBarrier拥有CountDownLatch的所有功能，还可以使用`reset()`方法重置屏障
+
+CyclicBarrier虽说功能与CountDownLatch类似，但是实现原理却完全不同，CyclicBarrier内部使用的是Lock + Condition实现的等待/通知模式
+
+如果玩一个游戏有多个“关卡”，那使用CountDownLatch显然不太合适，执行完没法重置，CyclicBarrier计数为0后可重置。
+
+```java
+public class CyclicBarrierDemo {
+    static class PreTaskThread implements Runnable {
+
+        private String task;
+        private CyclicBarrier cyclicBarrier;
+
+        public PreTaskThread(String task, CyclicBarrier cyclicBarrier) {
+            this.task = task;
+            this.cyclicBarrier = cyclicBarrier;
+        }
+
+        @Override
+        public void run() {
+            // 假设总共三个关卡
+            for (int i = 1; i < 4; i++) {
+                try {
+                    Random random = new Random();
+                    Thread.sleep(random.nextInt(1000));
+                    System.out.println(String.format("关卡%d的任务%s完成", i, task));
+                    cyclicBarrier.await();
+                } catch (InterruptedException | BrokenBarrierException e) {
+                    e.printStackTrace();
+                }
+                cyclicBarrier.reset(); // 重置屏障
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        CyclicBarrier cyclicBarrier = new CyclicBarrier(3, () -> {
+            System.out.println("本关卡所有前置任务完成，开始游戏...");
+        });
+
+        new Thread(new PreTaskThread("加载地图数据", cyclicBarrier)).start();
+        new Thread(new PreTaskThread("加载人物模型", cyclicBarrier)).start();
+        new Thread(new PreTaskThread("加载背景音乐", cyclicBarrier)).start();
+    }
+}
+```
+
+
+
+#### Phaser
+
+Phaser这个单词是“移相器，相位器”的意思。这个类是从JDK 1.7 中出现的。
+
+Phaser类的原理相比起来要复杂得多。它内部使用了两个基于Fork-Join框架的原子类辅助：
+
+> 移相器（Phaser）能够对波的相位进行调整的一种装置。任何传输介质对在其中传导的波动都会引入相移，这是早期模拟移相器的原理；现代电子技术发展后利用A/D、D/A转换实现了数字移相，顾名思义，它是一种不连续的移相技术，但特点是移相精度高。 移相器在雷达、导弹姿态控制、加速器、通信、仪器仪表甚至于音乐等领域都有着广泛的应用
+
+- party：对应一个线程，数量可以通过register或者构造参数传入;
+- arrive：对应一个party的状态，初始时是unarrived，当调用`arriveAndAwaitAdvance()`或者 `arriveAndDeregister()`进入arrive状态，可以通过`getUnarrivedParties()`获取当前未到达的数量;
+- register：注册一个party，每一阶段必须所有注册的party都到达才能进入下一阶段;
+- deRegister：减少一个party。
+- phase：阶段，当所有注册的party都arrive之后，将会调用Phaser的`onAdvance()`方法来判断是否要进入下一阶段。
+
+```java
+public class PhaserDemo {
+    static class PreTaskThread implements Runnable {
+
+        private String task;
+        private Phaser phaser;
+
+        public PreTaskThread(String task, Phaser phaser) {
+            this.task = task;
+            this.phaser = phaser;
+        }
+
+        @Override
+        public void run() {
+            for (int i = 1; i < 4; i++) {
+                try {
+                    // 第二次关卡起不加载NPC，跳过
+                    if (i >= 2 && "加载新手教程".equals(task)) {
+                        continue;
+                    }
+                    Random random = new Random();
+                    Thread.sleep(random.nextInt(1000));
+                    System.out.println(String.format("关卡%d，需要加载%d个模块，当前模块【%s】",
+                            i, phaser.getRegisteredParties(), task));
+
+                    // 从第二个关卡起，不加载NPC
+                    if (i == 1 && "加载新手教程".equals(task)) {
+                        System.out.println("下次关卡移除加载【新手教程】模块");
+                        phaser.arriveAndDeregister(); // 移除一个模块
+                    } else {
+                        phaser.arriveAndAwaitAdvance();
+                    }
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        Phaser phaser = new Phaser(4) {
+            @Override
+            protected boolean onAdvance(int phase, int registeredParties) {
+                System.out.println(String.format("第%d次关卡准备完成", phase + 1));
+                return phase == 3 || registeredParties == 0;
+            }
+        };
+
+        new Thread(new PreTaskThread("加载地图数据", phaser)).start();
+        new Thread(new PreTaskThread("加载人物模型", phaser)).start();
+        new Thread(new PreTaskThread("加载背景音乐", phaser)).start();
+        new Thread(new PreTaskThread("加载新手教程", phaser)).start();
+    }
+}
+输出：
+关卡1，需要加载4个模块，当前模块【加载背景音乐】
+关卡1，需要加载4个模块，当前模块【加载新手教程】
+下次关卡移除加载【新手教程】模块
+关卡1，需要加载3个模块，当前模块【加载地图数据】
+关卡1，需要加载3个模块，当前模块【加载人物模型】
+第1次关卡准备完成
+关卡2，需要加载3个模块，当前模块【加载地图数据】
+关卡2，需要加载3个模块，当前模块【加载背景音乐】
+关卡2，需要加载3个模块，当前模块【加载人物模型】
+第2次关卡准备完成
+关卡3，需要加载3个模块，当前模块【加载人物模型】
+关卡3，需要加载3个模块，当前模块【加载地图数据】
+关卡3，需要加载3个模块，当前模块【加载背景音乐】
+第3次关卡准备完成
+```
+
+
+
