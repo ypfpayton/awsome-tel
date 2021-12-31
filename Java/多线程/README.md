@@ -1039,5 +1039,3 @@ public class PhaserDemo {
 第3次关卡准备完成
 ```
 
-
-
